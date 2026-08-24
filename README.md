@@ -1,70 +1,63 @@
 # cloudbank-etsu-image
 
+See this repository's [CONTRIBUTING.md](https://github.com/cal-icor/cloudbank-etsu-image/blob/main/CONTRIBUTING.md) for instructions. That information will eventually be migrated to the [Cal-ICOR documentation](https://docs.cal-icor.org).
 
-### Modifying the new image
+## Building the image locally
 
-The process to modify and push an image to the Google Artifact Registry via the
-CI/CD pipeline is located in the [contribution guide](CONTRIBUTING.md)
+You should use [repo2docker](https://repo2docker.readthedocs.io/en/latest/) to build and use/test the image on your own device before you push and create a PR.  It's better (and typically faster) to do this first before using CI/CD.  There's no need to waste Github Action minutes to test build images when you can do this on your own device!
 
+Run `repo2docker` from inside the cloned image repo.  To run on a linux/WSL2 linux shell:
 
-## About this template repository
+``` bash
+repo2docker . # <--- the path to the repo
+```
 
-This template repository uses the
-[jupyterhub/repo2docker-action](https://github.com/jupyterhub/repo2docker-action)
-to build a Docker image using the contents of this repo, and pushes it to our
-[Google Artifact Registry](https://cloud.google.com/artifact-registry) when
-a pull request is merged to `main`.
+If you are using an ARM CPU (Apple M* silicon), you will need to run `jupyter-repo2docker` with the following arguments:
 
-### The environment
+``` bash
+jupyter-repo2docker --user-id=1000 --user-name=jovyan \
+  --Repo2Docker.platform=linux/amd64 \
+  --target-repo-dir=/home/jovyan/.cache \
+  -e PLAYWRIGHT_BROWSERS_PATH=/srv/conda \
+  . # <--- the path to the repo
+```
 
-The repo provides a default `environment.yml` conda configuration file for
-`repo2docker` to use to define and build a single-user server image. This file
-is used to define the python packages that will be installed during the image
-build process, either via `conda` or `pip`.
+If you just want to see if the image builds, but not automatically launch the server, add `--no-run` to the arguments (before the final `.`).
 
-**Note:**
-A complete list of configuration files that can be added to the
-repository and used by `repo2docker` to build the Docker image can be found in
-the [repo2docker documentation](https://repo2docker.readthedocs.io/en/latest/config_files.html#configuration-files).
+## Running the browser tests locally
 
-### Making changes to a single user server image
+Once you've built the image, you can run the same browser tests CI runs. Despite the name, these tests don't drive a browser UI; they start the built image as a JupyterLab server and talk to its kernel REST and WebSocket API directly. The container has to be serving on port 8888 with an empty token, which is what CI does.
 
-Once you've created the new image repo from this template, please refer to
-[the contribution instructions](CONTRIBUTING.md) located in the repo for
-detailed instructions.
+First, build the image with a name you can reference (the plain `repo2docker .` form above autogenerates one):
 
-### The GitHub Action workflows
+``` bash
+jupyter-repo2docker --no-run --image-name <whatever the name is>:local .
+```
 
-This template repository provides GitHub Action workflows that can build
-and push the image to Google Artifact Repository when configured, and push a
-commit to the [Cal-ICOR Jupyterhub repo](https://github.com/cal-icor/cal-icor-hubs)
-repository that modifies `hubploy.yaml` for any hubs using this image with the
-new SHA tag.
+Start the image as a container serving JupyterLab on port 8888 with no token:
 
-#### 1. Build and test container image :arrow_right: [test.yaml](https://github.com/cal-icor/cloudbank-etsu-image/blob/main/.github/workflows/build-test-image.yaml)
+``` bash
+docker run -d --name browser-test-container -p 8888:8888 \
+  <whatever the name is>:local \
+  jupyter lab --ip=0.0.0.0 --no-browser --ServerApp.token=''
+```
 
-This workflow is triggered when a pull request is opened against the default
-branch (`main`). During PR builds, the image is **only** built and **not**
-pushed to the Google Artifact Registry.
+Wait for the server to be ready:
 
-Please note that the image will not be built for documentation changes
-(markdown files or any graphic images in the `images/` subdirectory).
+``` bash
+curl --retry 30 --retry-delay 3 --retry-connrefused -sf http://localhost:8888/api/status
+```
 
-#### 2. YAML linting :arrow_right: [yaml-lint.yaml](https://github.com/cal-icor/cloudbank-etsu-image/blob/main/.github/workflows/yaml-lint.yaml)
+Install the test dependencies and Playwright's chromium, then run the tests:
 
-This workflow is triggered when a pull request is opened against the default
-branch (`main`). It uses [yamllint](https://yamllint.readthedocs.io/en/stable/)
-to check all yaml files in the repo for correctness.
+``` bash
+pip install -r browser-tests/requirements.txt
+playwright install chromium
+pytest browser-tests/ -v
+```
 
-#### 3. **Temporarily disabled:** Test this PR on Binder Badge :arrow_right: [binder.yaml](https://github.com/cal-icor/cloudbank-etsu-image/blob/main/.github/workflows/binder.yaml.disable)
+When you're done, stop and remove the container:
 
-Since our images are typically large and take > 10m to build, this means that
-Binderhub builds will currently time out.
-
-#### 4. Build, test and push container image :arrow_right: [build-push-open-pr.yaml](https://github.com/cal-icor/cloudbank-etsu-image/blob/main/.github/workflows/build-push-create-pr.yaml)
-
-After a PR is merged to `main`, this workflow builds the image again, pushes it
-to the Google Artifact Registry and then creates a commit that updates the image tag
-for any hubs that use this image. That commit is then pushed to the 
-[Cal-ICOR Jupyterhub repo](https://github.com/cal-icor/cal-icor-hubs), and you will
-then need to manually create a pull requests to merge and deploy the new image.
+``` bash
+docker stop browser-test-container && docker rm browser-test-container
+```
